@@ -1,0 +1,632 @@
+---
+title: "Characterisation of PUN proteins in SPombe"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+author:
+  - name: Melina Klostermann
+format: 
+  html:
+    code-fold: true
+    code-overflow: scroll
+    code-summary: "Show code"
+    code-tools: true
+    code-line-numbers: true
+    
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-expand: false
+    number-sections: true
+    
+    theme: sandstone
+    fontsize: 11pt
+    linestretch: 1.5
+        
+    fig-format: svg
+    cap-location: margin
+    crossref:
+      fig-title: Fig
+    
+    embed-resources: true
+    link-external-newwindow: true
+    smooth-scroll: true
+    
+    execute:
+      echo: true
+      warning: false
+---
+
+
+
+```{r setup, include=FALSE}
+require("knitr")
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, cache=FALSE, tidy.opts=list(width.cutoff=80))
+
+library(ggplot2) 
+source("/Users/melinaklostermann/Documents/projects/R_general_functions/theme_favorite.R")
+theme_set(theme_favorite())
+```
+
+```{r}
+library(Biostrings)
+library(tidyverse)
+library(idpr) 
+library(clusterProfiler)
+library(org.Dm.eg.db)
+library(dplyr)
+library(msa)
+library(BiocSet)
+library(GO.db)
+library(ggpattern)
+library(rtracklayer)
+library(GenomicRanges)
+
+
+# settings
+my_n_pun <- 5
+my_dist <- 150
+
+out <- "/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/Report8-SPombe/"
+
+kzl <- "SP"
+```
+
+
+# Get proteome sequences
+
+```{r}
+# ---------------------
+# Get proteome sequences
+# ---------------------
+
+protein_seqs <- readAAStringSet("/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/Uniprot_protein_seq_per_gene/Spombe /UP000002485_284812.fasta.gz") 
+# make data frame and clean
+all_seqs <- as.data.frame(protein_seqs)$x
+all_seqs <- data.frame(name = names(protein_seqs), width = width(protein_seqs), seq = all_seqs) %>%
+  rowwise() %>%
+  mutate(name = str_split(name, "_") %>% unlist() %>% .[1],
+         protein_name = str_split(name, "\\|") %>% unlist() %>% .[3],
+         protein_id = str_split(name, "\\|") %>% unlist() %>% .[2],)
+```
+
+
+
+## Look at the number PUN motifs per protein
+
+```{r}
+# ---------------------
+# Detect PUN motifs
+# ---------------------
+# Find all PUN motifs per protein
+
+PUN_motif<- "([RK]{1,3}[A-Z]{1,3}[RK]{2,3}[A-Z]{1,3}[RK]{1,3})"
+
+all_seqs <- all_seqs %>% rowwise() %>%
+  mutate(
+  PUN_motifs = str_extract_all(seq, pattern=PUN_motif),
+  PUN_positions = list(str_locate_all(seq, pattern=PUN_motif)[[1]][,1]),
+  n_PUN = length(PUN_motifs)
+)
+
+# Plot the number of PUN motifs per protein
+#######################
+
+# customize columns for plot
+all_seqs <- all_seqs %>% arrange(desc(n_PUN)) %>%
+  rowwise(.) %>%
+  mutate(n_PUN_plot = case_when(as.numeric(n_PUN) >= 5 ~ ">= 5",
+                                T ~ as.character(n_PUN))
+         )
+all_seqs$n_PUN_plot = factor(all_seqs$n_PUN_plot, levels = unique(all_seqs$n_PUN_plot))
+
+
+# plot
+ggplot(all_seqs, aes(x = 1, fill = n_PUN_plot)) +
+  geom_bar(position = "fill", color = "black")+
+  scale_fill_manual(values = pals::ocean.ice(n = 6))+
+  labs( 
+       x = "",
+       y = "Amount of proteins",
+       fill = "Number of \n PUN \n motifs")+
+  theme(legend.position = "right",
+        legend.key.size = unit(0.25, 'cm'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),)
+
+# save plot
+ggsave(paste0(out, "PUN_motifs_per_protein_", kzl, "_", Sys.Date(), ".pdf"), width = 4, height = 6, units = "cm")
+
+```
+Number of proteins with >= `r my_n_pun` PUN motifs: `r all_seqs %>% subset(n_PUN >= my_n_pun) %>% nrow(.)`.
+
+
+## Look for clusters of 3 PUN motifs in close proximity
+
+```{r fig.height= 5, fig.width= 5}
+# ---------------------
+# Distance of PUN motifs
+# ---------------------
+
+# functions to calculate distances
+##########################
+
+# Distance of two neighboring PUN motifs
+calculate_distance <- function(n) {
+n1 <- n[-length(n)]
+n2 <- n[-1]
+
+dist = n2 - n1 + 1
+return(dist)
+}
+
+# Distance of three neighboring PUN motifs
+calculate_adjecent_distance <- function(n) {
+n1 <- n[-length(n)]
+n2 <- n[-1]
+
+dist = n2 + n1
+return(dist)
+}
+
+# Add the length of the last of the three motifs to the distance
+add_lenght_of_3th <- function(d,m) {
+m = nchar(m)
+m = m[-2]
+d = d + m
+
+return(d)
+}
+
+
+# Select proteins with 5 PUN motifs and 
+# calculate distances
+#########################
+seqs <- all_seqs %>% 
+  subset(n_PUN >= my_n_pun) %>%
+  rowwise() %>%
+  mutate(distances = list(PUN_positions %>% unlist(.) %>% calculate_distance()),
+         adjecent_dist = list(distances %>% unlist(.) %>% calculate_adjecent_distance()),
+         adjecent_dist = list(add_lenght_of_3th(m=unlist(PUN_motifs), d = unlist(adjecent_dist ))),
+         smallest_adj_dist = min(unlist(adjecent_dist)))
+
+
+# plot
+df <- data.frame(adjecent_dist = sapply(seqs$adjecent_dist, min),
+                  second_sdj_dist = sapply(seqs$adjecent_dist, function(x) min( x[x!=min(x)] )))
+
+
+ggplot(df, aes(x = adjecent_dist, fill = adjecent_dist < my_dist))+
+  geom_histogram(binwidth = 5)+
+  ggtitle("Smallest distance of three PUN motifs per protein")+
+  ggforce::facet_zoom(xlim = c(0,300))+
+  scale_fill_manual(values = c("darkgrey", "dodgerblue4"))
+
+p <- ggplot(df, aes(x = adjecent_dist, fill = adjecent_dist < my_dist))+
+  geom_histogram(binwidth = 5)+
+  ggforce::facet_zoom(xlim = c(0,300))+
+  scale_fill_manual(values = c("darkgrey", "dodgerblue4"))+
+  labs(x = "Size of smallest cluster of 3 PUN motifs \n per protein [AA] \n (Only proteins with at least 5 PUN motifs are considered)",
+       y = "Number of proteins")+
+  scale_x_continuous(breaks = seq(from = 0, to =750, by = 50))+
+  theme(legend.key.size = unit(0.25, 'cm'))
+
+
+ggsave(p, file = paste0(out, "sizes_of_PUN_clusters_", kzl, "_", Sys.Date(), ".pdf"), width = 8, height = 10, units = "cm")
+
+```
+
+## Select PUN proteins
+
+Proteins with a PUN cluster and in total 5 proteins are defined as PUN proteins.
+
+```{r}
+#----------------------
+# Filter for proteins with PUN cluster (= PUN proteins) 
+# and plot
+#----------------------
+seqs <- as.data.frame(seqs) %>% 
+  subset(smallest_adj_dist < my_dist) %>%
+  mutate(n_PUN_norm = n_PUN/width) %>%
+  arrange(., n_PUN_norm)
+
+# plot PUN proteins ranked by the amount of proteins per protein length
+seqs$id = 1:nrow(seqs)
+
+# labels for top proteins
+top_10 <- seqs %>% arrange(desc(n_PUN_norm)) %>% .[1:10,]
+
+# Add SRRM1 to top 10
+top_10 <- rbind(top_10, seqs %>% subset(protein_name == "SRRM1"))
+
+ggplot(seqs, aes(x = id, y = n_PUN_norm, label = protein_name))+
+geom_point()+
+ggtitle("Number of PUN motifs", subtitle = "only PUN proteins are shown here \n (min 3 PUN motivs in 100nt distance)")+
+ggrepel::geom_label_repel(data = top_10, aes(x = id, y = n_PUN, label = protein_name), max.overlaps = 10)+
+  labs(x = "Proteins", y = "Number of PUN motifs / protein length")
+
+p <- ggplot(seqs, aes(x = id, y = n_PUN_norm, label = protein_name))+
+ggrastr::geom_point_rast(dpi = 300)+
+ggrepel::geom_label_repel(data = top_10[1:5,], aes(x = id, y = n_PUN_norm, label = protein_name), max.overlaps = 10, size = 2)+
+  labs(x = "Ranked proteins", y = "Number of PUN motifs / protein length")
+
+ggsave(p, file = paste0(out, "PUN_proteins_per_length_", kzl, "_", Sys.Date(), ".pdf"), width = 6, height = 6, units = "cm")
+
+# same plot without normalisation
+# seqs <- as.data.frame(seqs) %>%
+#   arrange(., n_PUN)
+# 
+# # plot PUN proteins ranked by the amount of proteins per protein length
+# seqs$id = 1:nrow(seqs)
+# 
+# p <- ggplot(seqs, aes(x = id, y = n_PUN, label = protein_name))+
+# ggrastr::geom_point_rast(dpi = 300)+
+# ggrepel::geom_label_repel(data = top_10[1:5,], aes(x = id, y = n_PUN, label = protein_name), max.overlaps = 10, size = 2)+
+#   labs(x = "Ranked proteins", y = "Number of PUN motifs / protein length")
+
+```
+
+```{r}
+#----------------------
+# Plot number of PUN motifs in PUN proteins
+#----------------------
+
+# customise for plot
+seqs <- seqs%>%
+  rowwise(.) %>%
+  mutate(n_PUN_plot2 = case_when(as.numeric(n_PUN) >= 10 ~ ">= 10",
+                                T ~ as.character(n_PUN))
+         ) %>%
+  arrange(desc(as.numeric(n_PUN)))
+seqs$n_PUN_plot2 = factor(seqs$n_PUN_plot2, levels = unique(seqs$n_PUN_plot2))
+
+# plot
+ggplot(seqs, aes(x = 1, fill = n_PUN_plot2)) +
+  geom_bar(position = "stack", color = "black")+
+  scale_fill_manual(values = pals::ocean.ice(n = 13))+
+  labs( 
+       x = "",
+       y = "Number of proteins",
+       fill = "Number of \n PUN \n motifs")+
+  theme(legend.position = "right",
+        legend.key.size = unit(0.25, 'cm'),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),)
+
+ggsave(paste0(out, "PUN_motifs_per_protein_zoom_in_", kzl, "_", Sys.Date(), ".pdf"), width = 4, height = 6, units = "cm")
+
+```
+
+Number of proteins with >= 3 PUN motifs within 100 AA: `r seqs %>% subset(smallest_adj_dist < my_dist) %>% nrow(.)`.
+
+# Characterise PUN motifs
+
+## Visualise PUN motif positions in the top PUN proteins
+
+```{r fig.width=6, fig.height=2}
+#----------------------
+# Visualization of top 10 PUN proteins
+#----------------------
+
+# get length of each PUN motif
+seqs <- seqs %>% 
+  rowwise() %>%
+  mutate(length_PUN = list(nchar(unlist(PUN_motifs))))
+
+
+# loop over top 10 PUN proteins
+for(i in 1:nrow(top_10)){
+  
+  # select target
+   s <- seqs %>% subset(protein_name == top_10[i,]$protein_name)
+   
+  # get start points and with of all motifs
+  df <- data.frame(pos = as.numeric(unlist(s$PUN_positions)), width = as.numeric(unlist(s$length_PUN)))
+  # get end points of motifs
+  df <- df %>% mutate(pos_end = pos + width - 1)
+
+  # plot
+  print(
+  ggplot(df, aes(xmin = pos, xmax = pos_end, ymin = 0, ymax = 1))+
+    geom_rect(xmin = 0, xmax = s$width, ymin = 0.25, ymax = 0.75, fill = "grey", color = "black")+
+    geom_rect( fill = "dodgerblue3", color = "black")+
+    scale_fill_manual(values = pals::ocean.algae(n=length(unique(df$pos))))+
+    scale_color_manual(values = pals::ocean.algae(n=length(unique(df$pos))))+
+    theme(axis.line.y =element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title.y=element_blank(),
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background=element_blank(),
+        legend.position = "none")+
+    xlim(0, s$width )+
+    ggtitle(paste(s$protein_name, "PUN positions"))+
+    labs(x = "Position [AA]")
+)
+  
+    p <- ggplot(df, aes(xmin = pos, xmax = pos_end, ymin = 0, ymax = 1))+
+    geom_rect(xmin = 0, xmax = s$width, ymin = 0.25, ymax = 0.75, fill = "grey", color = "black")+
+    geom_rect( fill = "dodgerblue3", color = "black")+
+    scale_fill_manual(values = pals::ocean.algae(n=length(unique(df$pos))))+
+    scale_color_manual(values = pals::ocean.algae(n=length(unique(df$pos))))+
+    theme(axis.line.y =element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title.y=element_blank(),
+        panel.background=element_blank(),
+        panel.border=element_blank(),
+        panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        plot.background=element_blank(),
+        legend.position = "none")+
+    xlim(0, s$width )+
+    scale_x_continuous(breaks = seq(from = 0, to = s$width, by = s$width))+
+    labs(x = "")
+  ggsave(paste0(out, "Schema", s$protein_name, "_", kzl, "_", Sys.Date(), ".pdf"), width = 4, height = 2.5, units = "cm")
+}
+
+```
+
+
+
+## Disorderdness of the PUN proteins
+
+IUPred2 scores are used to look at the disorderdness of the proteins.
+
+```{r eval = FALSE}
+#----------------------
+# Download IUPred2 scores for PUN proteins
+#----------------------
+disorder <- apply(seqs, 1, function(x) iupred(x$protein_id,
+       proteinName = x$protein_name,
+       iupredType = "long",
+       plotResults = FALSE))
+
+saveRDS(disorder, paste0(out, "disorderdness.rds"))
+
+```
+
+```{r eval = FALSE}
+#----------------------
+# Download IUPred2 scores random non PUN proteins
+#----------------------
+
+# select random non PUN proteins
+set.seed(42)
+non_pun_seqs <- all_seqs %>% 
+  subset(n_PUN == 0)
+s = sample(1:nrow(non_pun_seqs), 500)
+non_pun_seqs <- non_pun_seqs[s,]
+
+# get IUPred2 scores
+disorder_non_pun <- apply(non_pun_seqs, 1, function(x) iupred(x$protein_id,
+       proteinName = x$protein_name,
+       iupredType = "long",
+       plotResults = FALSE))
+
+saveRDS(disorder_non_pun, paste0(out, "disorderdness_non_pun.rds"))
+
+```
+
+### Compare mean disorderness of PUN and non-PUN proteins
+
+```{r}
+#----------------------
+# Compare mean disorderness of PUN and non-PUN proteins
+#----------------------
+# get scores
+disorder <- readRDS(paste0(out, "disorderdness.rds"))
+disorder_non_pun <- readRDS(paste0(out, "disorderdness_non_pun.rds"))
+
+
+# calculate mean and
+# make data frame for plot
+d = disorder %>% map_dfr(~c(IUPred2_mean_per_protein = mean(.x$IUPred2)))
+d$group = paste("PUN proteins (n =", nrow(d),")")
+
+d1 = disorder_non_pun %>% map_dfr(~c(IUPred2_mean_per_protein = mean(.x$IUPred2)))
+d1$group = "Proteins without \n any PUN motif (n = 500)"
+
+disorder_gg <- rbind(d,d1)
+
+
+# plot
+ggplot(disorder_gg, aes( x = group, y = IUPred2_mean_per_protein, color = group))+
+ geom_boxplot()+
+  ggpubr::stat_compare_means()+
+  ggtitle("Comparison of mean IUPred2 score per protein", subtitle = "for all PUN proteins and 500 random non-PUN proteins")+
+  scale_color_manual(values = c("darkgrey", "dodgerblue4"))+
+  labs(fill = paste("3 or more PUN motifs in a distance of less then", my_dist, "AA"),
+       x = "",
+       y = "Mean IUPred2 score per protein")+
+ ggbeeswarm::geom_beeswarm()
+
+
+p <- ggplot(disorder_gg, aes( x = group, y = IUPred2_mean_per_protein))+
+  geom_boxplot()+
+  ggpubr::stat_compare_means(size = 1)+
+  scale_color_manual(values = c("darkgrey", "dodgerblue4"))+
+  labs(fill = paste("3 or more PUN motifs in a distance of less then", my_dist, "AA"),
+       x = "",
+       y = "Disorderness of proteins [Mean IUPred2 score]")+
+ ggrastr:: rasterise(ggbeeswarm::geom_beeswarm(size = 0.5, shape =1, alpha = 0.5, aes(color = group)), dpi = 300)+
+  theme(legend.position = "none")+
+  scale_x_discrete(guide = guide_axis(angle = 45)) 
+
+ggsave(p, file = paste0(out, "Comp_disorder_", kzl, "_", Sys.Date(), ".pdf"), width = 4, height = 8, units = "cm")
+  
+```
+
+
+## Gene ontology
+
+Uniport ID are tranfered to entrz IDs with annotation downloaded from https://ftp.ensemblgenomes.ebi.ac.uk/pub/fungi/release-58/gff3/schizosaccharomyces_pombe/
+
+```{r eval = F}
+#----------------------
+# Transfer protein IDs to ENTREZ IDs
+#----------------------
+
+library(biomaRt)
+mart <- useMart(biomart="fungi_mart", dataset="spombe_eg_gene", host="https://fungi.ensembl.org")
+
+my_attributes <- c("uniprotswissprot", "name_1006", "go_id")
+info_biomart_go <- getBM(attributes=my_attributes,
+                        mart = mart, useCache = F)
+
+saveRDS(info_biomart_go, file = paste0(out, "biomart_info_SP.rds"))
+```
+
+
+```{r eval=FALSE}
+#----------------------
+# Gene Ontology analysis
+#----------------------
+# As background all proteins in the initial sequence file are used
+
+
+# add biomart infos and save files
+entrez_ids <- left_join(seqs, info_biomart_go, by = c(protein_id = "uniprotswissprot")) 
+
+entrez_ids_bg <- left_join(all_seqs, info_biomart_go, by = c(protein_id = "uniprotswissprot")) 
+
+term2gene <- info_biomart_go[,c("go_id", "uniprotswissprot" )]
+term2name <- info_biomart_go[,c("go_id", "name_1006" )]
+
+
+# Calculate GO enrichment for the three Ontologies separately
+go_enrichment <- enricher(
+  entrez_ids$protein_id,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "BH",
+  universe = entrez_ids_bg$protein_id,
+  minGSSize = 10,
+  maxGSSize = 500,
+  qvalueCutoff = 1,
+  TERM2GENE = term2gene,
+  TERM2NAME = term2name
+)
+
+
+# Customise for plot
+go_enrichment <- go_enrichment %>% 
+  as.data.frame() %>%
+  rowwise() %>%
+  mutate(geneRatio = as.numeric(unlist(str_split(GeneRatio, pattern = "/"))[1]) /
+                              as.numeric(unlist(str_split(GeneRatio, pattern = "/"))[2]))
+
+# Select top 20
+go_top <- go_enrichment %>% 
+  subset(p.adjust < 0.01) %>% 
+  # arrange(desc(geneRatio)) %>%
+  # .[1:20,] %>%
+  arrange(geneRatio) 
+
+go_top$Description <- factor(go_top$Description, levels = go_top$Description)
+
+# plot
+ggplot(go_top, aes(x = geneRatio, y = Description ))+
+  geom_point(aes(size=Count, color = log10(p.adjust)))+
+  scale_colour_gradientn(colours = pals::ocean.ice(50)[10:40])+
+  theme(legend.key.size = unit(0.2, 'cm'),
+        legend.position = "right")
+
+ggsave(file = paste0(out, "GO_", kzl, "_", Sys.Date(), ".pdf"), width = 14, height = 10, units = "cm")
+
+```
+
+## Nucleus, Nucleolus and other
+
+```{r}
+#----------------------
+# Check specifically for proteins belonging to the nuleus and nucleolus
+#----------------------
+info_biomart_go <- readRDS(paste0(out, "biomart_info_SP.rds"))
+
+
+nucleus_set <- info_biomart_go %>% subset(name_1006 == "nucleus")
+nucleolus_set <- info_biomart_go %>% subset(name_1006 == "nucleolus")
+
+# Overlap sets with PUN proteins
+prot_nucleolus <- seqs %>% subset(protein_id %in% nucleolus_set$uniprotswissprot)
+prot_other_nucleus <- seqs %>% subset((protein_id %in% nucleus_set$uniprotswissprot) & !(protein_id %in% nucleolus_set$uniprotswissprot)) 
+prot_other <- seqs %>% subset(!(protein_id %in% nucleus_set$uniprotswissprot) & !(protein_id %in% nucleolus_set$uniprotswissprot)) 
+
+
+# Make customized data frame for plot
+PUN_distribution = data.frame( location = c("nucleolus", "nucleus_non_nucleolus", "other"), 
+                               n_proteins = c(nrow(prot_nucleolus),
+                                              nrow(prot_other_nucleus),
+                                              nrow(prot_other))) %>% 
+  mutate(csum = rev(cumsum(rev(n_proteins))), 
+         pos = n_proteins/2 + lead(csum, 1),
+         pos = if_else(is.na(pos), n_proteins/2, pos))
+
+PUN_distribution$perc_proteins = PUN_distribution$n_proteins / sum(PUN_distribution$n_proteins)
+PUN_distribution$nucleus = c("nucleolus", "other", "other")
+
+v <- pals::ocean.ice(4)
+
+# Plot
+ggplot(PUN_distribution, aes(x="", y = n_proteins)) +
+  geom_bar_pattern( aes(fill =  location, pattern_density = nucleus),
+    pattern = "stripe",
+    width                = 0.5, 
+    stat                 = "identity", 
+    color               = 'black',
+    pattern_fill = "black",
+    pattern_scale        = 1,
+    pattern_aspect_ratio = 1,
+    pattern_key_scale_factor = 1,
+    pattern_spacing = 0.02
+  ) +
+  coord_polar("y") + 
+  theme_void(20) +
+  scale_pattern_density_manual(values = c(nucleolus = 0.1, other=0))+
+  scale_fill_manual(values = c("dodgerblue3", "dodgerblue3", "darkgrey"))+
+  ggrepel::geom_label_repel(
+    aes( y = pos, label = paste(location, n_proteins)),
+                   size = 2, show.legend = FALSE) +
+  theme(legend.position = "none")
+
+ggsave(paste0(out, "Nucleus_pie_", kzl, "_", Sys.Date(),".pdf"), width = 5, height = 5, units = "cm")
+```
+
+# Save
+
+```{r}
+#----------------------
+# Save excel list of PUN proteins
+#----------------------
+seqs <- seqs %>% ungroup() %>%
+  dplyr::select(- c(n_PUN_plot, n_PUN_plot2, distances, adjecent_dist, id, length_PUN) ) %>%
+  as.data.frame(.) 
+
+colnames(seqs) <- c("Uniprot name", 
+                    "Protein length", 
+                    "Protein sequence", 
+                    "Protein name", 
+                    "Protein ID", 
+                    "PUN motifs", 
+                    "Start positions of PUN motifs", 
+                    "Number of PUN motifs","
+                    Size of smallest PUN cluster", 
+                    "Relative amount of PUN motifs")
+
+xlsx::write.xlsx2(x = as.data.frame(seqs), file = paste0(out, "PUN_proteins_", kzl, "_", Sys.Date(), ".xlsx"))
+```
+
+# Session info
+```{r}
+sessionInfo()
+
+```
