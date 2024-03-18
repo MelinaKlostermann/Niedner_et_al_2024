@@ -633,6 +633,28 @@ ggplot(PUN_distribution, aes(x="", y = n_proteins)) +
 ggsave(paste0(out, "Nucleus_pie_SC.pdf"), width = 5, height = 5, units = "cm")
 ```
 
+# Number PUN proteins in Riobosome biogenesis
+
+```{r}
+go <- go_sets(org.Sc.sgd.db, "UNIPROT", go = c("GO", "GOID"), ontology = "BP")
+
+map <- map_add_set(go, GO.db, "GOID", "TERM")
+go <-  go %>% mutate_set(term = map)
+s <- es_set(go)
+es <- es_elementset(go)
+
+
+ribosome_set_id <- "GO:0042254"
+ribosome_set <- es %>% subset(set == ribosome_set_id)
+
+# Overlap sets with PUN proteins
+prot_ribosome <- seqs %>% subset(protein_id %in% ribosome_set$element)
+
+nrow(prot_ribosome)
+
+```
+
+
 # Save
 
 ```{r}
