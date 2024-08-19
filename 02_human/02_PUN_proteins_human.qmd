@@ -643,6 +643,26 @@ ggplot(PUN_distribution, aes(x="", y = n_proteins)) +
 ggsave(paste0(out, "Nucleus_pie_", kzl, "_", Sys.Date(),".pdf"), width = 5, height = 5, units = "cm")
 ```
 
+
+# Overlap with RBPs from  Baltz 2012 and Castello 2016
+
+```{r}
+rbp_baltz <- readxl::read_xls("/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/RBP_tables/Balz2012_mmc1.xls", skip = 1)
+rbp_castello <- readxl::read_xlsx("/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/RBP_tables/Castello2016_mmc2.xlsx")
+rbp_baltz_temp <- rbp_baltz %>% separate_rows(Uniprot, sep = ";" )
+
+seqs$castello2016 <- seqs$protein_id %in% rbp_castello$ProtID
+sum(seqs$castello2016)
+
+seqs$baltz2012 <- seqs$protein_id %in% rbp_baltz_temp$Uniprot
+sum(seqs$baltz2012)
+
+
+
+
+
+```
+
 # Save
 
 ```{r}

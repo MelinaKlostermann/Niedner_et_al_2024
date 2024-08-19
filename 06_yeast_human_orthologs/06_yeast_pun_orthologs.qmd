@@ -1,0 +1,162 @@
+---
+title: "Ortologs human - mouse"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+author:
+  - name: Melina Klostermann
+format: 
+  html:
+    code-fold: true
+    code-overflow: scroll
+    code-summary: "Show code"
+    code-tools: true
+    code-line-numbers: true
+    
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-expand: false
+    number-sections: true
+    
+    theme: sandstone
+    fontsize: 11pt
+    linestretch: 1.5
+        
+    fig-format: svg
+    cap-location: margin
+    crossref:
+      fig-title: Fig
+    
+    embed-resources: true
+    link-external-newwindow: true
+    smooth-scroll: true
+    
+    execute:
+      echo: true
+      warning: false
+---
+
+
+
+```{r setup, include=FALSE}
+require("knitr")
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, cache=FALSE, tidy.opts=list(width.cutoff=80))
+
+library(ggplot2) 
+source("/Users/melinaklostermann/Documents/projects/R_general_functions/theme_favorite.R")
+theme_set(theme_favorite())
+```
+
+
+```{r}
+library(tidyverse)
+library(ggpie)
+
+
+out <- "/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/Report11-othologs_yest_human/"
+```
+
+```{r}
+h_pun <- readRDS("/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/Report02-human/PUN_proteins_HS_2024-04-26.rds")
+y_pun <- readRDS("/Users/melinaklostermann/Documents/projects/PUN-proteins/PUN_code/Report01_clean/PUN_proteins_SC2024-06-20.rds")
+
+```
+
+
+# Get orthologs from biomart
+
+```{r, eval=FALSE, include=FALSE}
+library(biomaRt)
+
+#ensembl <- useEnsembl(biomart = "genes")
+# searchDatasets(mart = ensembl, pattern = "scerev")
+
+ensembl <- useEnsembl(biomart = "genes", dataset = "scerevisiae_gene_ensembl")
+ 
+my_attributes <- c("ensembl_gene_id", "uniprotswissprot")
+
+my_attributes2 <- c("ensembl_gene_id", "hsapiens_homolog_ensembl_gene", "hsapiens_homolog_associated_gene_name", "hsapiens_homolog_orthology_type", "external_gene_name")
+
+info_biomart_new <- getBM(attributes=my_attributes,
+                        mart = ensembl, useCache = F)
+info_biomart_new2 <- getBM(attributes=my_attributes2,
+                        mart = ensembl, useCache = F)
+
+
+# add biomart infos and save files
+y_pun <- left_join(y_pun, info_biomart_new, by = c(`Protein ID` = "uniprotswissprot")) 
+y_pun <- left_join(y_pun, info_biomart_new2, by = "ensembl_gene_id") 
+
+
+saveRDS(y_pun, file = paste0(out, "yeast_pun_with_orthologs.rds"))
+
+```
+
+
+```{r}
+y_pun <- readRDS(paste0(out, "yeast_pun_with_orthologs.rds"))
+
+y_pun <- mutate(y_pun, hsapiens_homolog_orthology_type = case_when(
+  hsapiens_homolog_orthology_type == "" ~ "no known ortholog",
+  T ~ hsapiens_homolog_orthology_type
+) )
+
+# y_pun %>% 
+#   head(n = 10) %>%
+#   knitr::kable() %>%
+#   kableExtra::kable_styling( bootstrap_options = c("basic", "hover"),  full_width=FALSE)
+
+```
+
+# Orthology types
+
+```{r}
+ggplot(y_pun, aes(x = 1, fill = hsapiens_homolog_orthology_type))+
+  geom_bar(position = "fill")+
+  scale_fill_manual(values = c("lightgrey","darkgrey", "blue", "darkblue"))+
+  theme(legend.position = "right",
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  xlab("")+
+  ylab("Realtive amount of PUN proteins in yeast \n with a certain type of ortholog in human")+
+  labs(fill="Type of human ortholog(s)")
+
+ggsave(paste0(out, "Human_orthologs_for_yeast_PUN_proteins.pdf"))
+
+table(y_pun$hsapiens_homolog_orthology_type) %>% kable()
+
+ggpie(data = y_pun, group_key = "hsapiens_homolog_orthology_type", count = "full",
+      fill_color = c("lightgrey","blue", "grey", "darkgrey" ))+
+  labs(fill = "Types of human orthologs for yeast PUN proteins.")
+
+xlsx::write.xlsx2(y_pun, paste0(out, "Yest_PUN_proteins_with_human_ortholog_information.xlsx"))
+```
+
+# Mouse PUN proteins and their human 1-2-1 orthologs
+
+```{r}
+y_pun_121 <- subset(y_pun, hsapiens_homolog_orthology_type %in% c("ortholog_one2one", "ortholog_one2many"))
+
+y_pun_121 <- mutate(y_pun_121, yeast_and_human_PUN = case_when(hsapiens_homolog_associated_gene_name %in% h_pun$`Protein name` ~ "hs ortholog is a PUN protein",
+                                                               T ~ "hs ortholog is not a PUN protein"))
+
+y_pun_121 <- y_pun_121 %>% 
+  group_by(`Protein ID`) %>% 
+  arrange(desc(yeast_and_human_PUN), .by_group = T) %>%
+  slice(1)
+
+ggplot(y_pun_121, aes(x = 1, fill = yeast_and_human_PUN))+
+  geom_bar(position = "fill")+
+  scale_fill_manual(values = c( "darkblue", "grey"))
+
+
+ggpie(data = y_pun_121, group_key = "yeast_and_human_PUN", count = "full",
+      fill_color = c("grey", "dodgerblue"))+
+  labs(fill = "Yeast PUN proteins \n with human orthologs.")
+
+ggsave(paste0(out, "Yeast_PUN_proteins_with_PUN_hs_orthologs.pdf"))
+
+
+```
+
+
+
